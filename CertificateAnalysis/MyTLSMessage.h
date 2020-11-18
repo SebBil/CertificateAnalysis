@@ -4,9 +4,14 @@
 
 #include <iomanip>
 
-#include <openssl/x509.h>
 #include <openssl/x509v3.h>
+#include <openssl/bn.h>
+#include <openssl/asn1.h>
+#include <openssl/x509.h>
+#include <openssl/x509_vfy.h>
+#include <openssl/pem.h>
 #include <openssl/bio.h>
+
 
 #pragma pack(push, 1)
 struct CertLen {

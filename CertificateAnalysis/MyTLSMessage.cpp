@@ -1,6 +1,7 @@
 #include "MyTLSMessage.h"
 #include <sstream>
 
+
 MyTLSMessage::MyTLSMessage(TcpReassemblyData rData, pcpp::ssl_tls_record_layer* tls, uint8_t* payload)
 {
 	m_conData = rData.m_conData;
@@ -32,7 +33,7 @@ uint8_t* MyTLSMessage::GetPayload()
 
 std::string MyTLSMessage::GetServerIP()
 {
-	return "Server IP: " + m_conData.dstIP.toString();
+	return m_conData.dstIP.toString();
 }
 
 bool MyTLSMessage::IsCertificateMessage()
@@ -41,6 +42,22 @@ bool MyTLSMessage::IsCertificateMessage()
 	if (handshake->handshakeType == pcpp::SSLHandshakeType::SSL_CERTIFICATE)
 		return true;
 	return false;
+}
+
+std::string thumbprint(X509* x509)
+{
+	static const char hexbytes[] = "0123456789ABCDEF";
+	unsigned int md_size;
+	unsigned char md[EVP_MAX_MD_SIZE];
+	const EVP_MD* digest = EVP_get_digestbyname("sha1");
+	X509_digest(x509, digest, md, &md_size);
+	std::stringstream ashex;
+	for (int pos = 0; pos < md_size; pos++)
+	{
+		ashex << hexbytes[(md[pos] & 0xf0) >> 4];
+		ashex << hexbytes[(md[pos] & 0x0f) >> 0];
+	}
+	return ashex.str();
 }
 
 void MyTLSMessage::ExtractCertificateInfos(std::vector<X509*> *certChain)
@@ -68,11 +85,32 @@ void MyTLSMessage::ExtractCertificateInfos(std::vector<X509*> *certChain)
 			std::cout << "Unable to parse certificate in PCCERT_CONTEXT\n" << std::endl;
 		}*/
 
+		
 		X509* cert = d2i_X509(NULL, &startCertPoint, len);
 		if (!cert) {
 			std::cout << "Unable to parse certificate\n" << std::endl;
 			return;
 		}
+
+		std::cout << thumbprint(cert) << std::endl;
+
+//#define SHA1LEN 20
+//		char buf[SHA1LEN];
+//
+//		const EVP_MD* digest = EVP_sha1();
+//		unsigned digest_len;
+//
+//		int rc = X509_digest(cert, digest, (unsigned char*)buf, &digest_len);
+//		if (rc == 0 || digest_len != SHA1LEN) {
+//			;
+//		}
+//		else {
+//			char strbuf[23 * SHA1LEN + 1];
+//			hex_encode(buf, strbuf, SHA1LEN);
+//			std::cout << strbuf << std::endl;
+//		}
+
+		// STACK_OF(X509_EXTENSION)* exts = cert->cert_info->extensions;
 
 
 		certChain->push_back(cert);
@@ -90,40 +128,4 @@ void MyTLSMessage::ExtractCertificateInfos(std::vector<X509*> *certChain)
 		idx = idx + len + sizeof(CertLen);
 		startCertPoint = startCertPoint + len;
 	}
-}
-
-std::vector<std::string> subject_alt_names(X509* x509)
-{
-	std::vector<std::string> list;
-	GENERAL_NAMES* subjectAltNames = (GENERAL_NAMES*)X509_get_ext_d2i(x509, NID_subject_alt_name, NULL, NULL);
-	for (int i = 0; i < sk_GENERAL_NAME_num(subjectAltNames); i++)
-	{
-		GENERAL_NAME* gen = sk_GENERAL_NAME_value(subjectAltNames, i);
-		if (gen->type == GEN_URI || gen->type == GEN_DNS || gen->type == GEN_EMAIL)
-		{
-			ASN1_IA5STRING* asn1_str = gen->d.uniformResourceIdentifier;
-			std::string san = std::string((char*)ASN1_STRING_data(asn1_str), ASN1_STRING_length(asn1_str));
-			list.push_back(san);
-		}
-		else if (gen->type == GEN_IPADD)
-		{
-			unsigned char* p = gen->d.ip->data;
-			if (gen->d.ip->length == 4)
-			{
-				std::stringstream ip;
-				ip << (int)p[0] << '.' << (int)p[1] << '.' << (int)p[2] << '.' << (int)p[3];
-				list.push_back(ip.str());
-			}
-			else //if(gen->d.ip->length == 16) //ipv6?
-			{
-				//std::cerr << "Not implemented: parse sans ("<< __FILE__ << ":" << __LINE__ << ")" << endl;
-			}
-		}
-		else
-		{
-			//std::cerr << "Not implemented: parse sans ("<< __FILE__ << ":" << __LINE__ << ")" << endl;
-		}
-	}
-	GENERAL_NAMES_free(subjectAltNames);
-	return list;
 }

@@ -29,26 +29,42 @@ static int messagesReady = 0;
 static bool verbose = false;
 
 int countCertificateMessagePerConnection = 0;
-int countMatchCertSubj = 0;
+int countMatchCertIssuer = 0;
 int countCertNotExist = 0;
 int countMatchCert = 0;
-int countMatchSubj = 0;
+int countMatchIssuer = 0;
+
+using namespace std;
+using namespace matplot;
+namespace po = boost::program_options;
 
 // typedef representing the connection manager and its iterator
-typedef std::map<uint32_t, std::vector<TcpReassemblyData>> TcpReassemblyConnMgr;
-typedef std::map<uint32_t, std::vector<TcpReassemblyData>>::iterator TcpReassemblyConnMgrIter;
+typedef map<uint32_t, vector<TcpReassemblyData>> TcpReassemblyConnMgr;
+typedef map<uint32_t, vector<TcpReassemblyData>>::iterator TcpReassemblyConnMgrIter;
 
-typedef std::vector<MyTLSMessage> TLSMessageList;
+/* Figure 1 Values */
+vector<pair<int, X509*>> m_trustedCertificateListCount;
+vector<vector<int>> m_fig1Values;
 
+/* Figure 2 Values */
+vector<int> m_fig2CertCount;
+vector<tm> m_fig2Values;
+// vector<time_t> m_fig2ValuesSec;
 
-std::vector<std::pair<int, X509*>> m_trustedCertificateListCount;
-std::vector<int> m_trustedCertificateListCountValues;
+/* Figures init */
+auto fh1 = figure(true);
+auto fh2 = figure(true);
 
-std::vector<std::vector<X509*>> AllCertsChain;
+void UpdateFigures()
+{
+	// Figure 1 - Bar
+	fh1->current_axes()->bar(m_fig1Values);
+	fh1->current_axes()->draw();
 
-namespace po = boost::program_options;
-using namespace matplot;
-
+	// Figure 2 - not finished yet
+	/*fh2->current_axes()->plot(m_fig2Values);
+	fh2->current_axes()->draw();*/
+}
 
 /**
  * The callback being called by the TCP reassembly module whenever new data arrives on a certain connection
@@ -64,8 +80,8 @@ static void tcpReassemblyMsgReadyCallback(int8_t sideIndex, const pcpp::TcpStrea
 
 	if (iter == connMgr->end())
 	{
-		std::vector<TcpReassemblyData> tmp;
-		connMgr->insert(std::make_pair(tcpData.getConnectionData().flowKey, tmp));
+		vector<TcpReassemblyData> tmp;
+		connMgr->insert(make_pair(tcpData.getConnectionData().flowKey, tmp));
 		iter = connMgr->find(tcpData.getConnectionData().flowKey);
 	}
 
@@ -73,6 +89,7 @@ static void tcpReassemblyMsgReadyCallback(int8_t sideIndex, const pcpp::TcpStrea
 	iter->second.push_back(TcpReassemblyData(sideIndex, tcpData.getConnectionData(), tcpData.getData(), tcpData.getDataLength()));
 
 }
+
 /**
  * The callback being called by the TCP reassembly module whenever a new connection is found. This method adds the connection to the connection manager
  */
@@ -89,8 +106,8 @@ static void tcpReassemblyConnectionStartCallback(const pcpp::ConnectionData& con
 	if (iter == connMgr->end())
 	{
 		// add it to the connection manager
-		std::vector<TcpReassemblyData> tmp;
-		connMgr->insert(std::make_pair(connectionData.flowKey, tmp));
+		vector<TcpReassemblyData> tmp;
+		connMgr->insert(make_pair(connectionData.flowKey, tmp));
 	}
 }
 
@@ -101,7 +118,7 @@ static void tcpReassemblyConnectionStartCallback(const pcpp::ConnectionData& con
 static void tcpReassemblyConnectionEndCallback(const pcpp::ConnectionData& connectionData, pcpp::TcpReassembly::ConnectionEndReason reason, void* userCookie)
 {
 	messagesEndcon++;
-	TLSMessageList TlsMessages;
+	vector<MyTLSMessage> TLSMessageList;
 
 	// get a pointer to the connection manager
 	TcpReassemblyConnMgr* connMgr = (TcpReassemblyConnMgr*)userCookie;
@@ -140,14 +157,14 @@ static void tcpReassemblyConnectionEndCallback(const pcpp::ConnectionData& conne
 			else if (ret == 0)
 			{
 				// -> Multiple Handshake Messages
-				builder.CreateTLSMessage(&TlsMessages);
+				builder.CreateTLSMessage(&TLSMessageList);
 				builder.Clear();
 				reassemble = false;
 				continue;
 			}
 			else
 			{
-				builder.CreateTLSMessage(&TlsMessages);
+				builder.CreateTLSMessage(&TLSMessageList);
 				builder.Clear();
 				reassemble = false;
 
@@ -169,7 +186,7 @@ static void tcpReassemblyConnectionEndCallback(const pcpp::ConnectionData& conne
 					}
 					if (tls->recordType == pcpp::SSL_HANDSHAKE)
 					{
-						TlsMessages.push_back(MyTLSMessage(y, tls, tls_payload));
+						TLSMessageList.push_back(MyTLSMessage(y, tls, tls_payload));
 					}
 					pkt_length -= sizeof(pcpp::ssl_tls_record_layer) + l;
 					tls = (pcpp::ssl_tls_record_layer*)(tls_payload + l);
@@ -177,7 +194,7 @@ static void tcpReassemblyConnectionEndCallback(const pcpp::ConnectionData& conne
 					curManageIndex += l + sizeof(pcpp::ssl_tls_record_layer);
 					if (pkt_length > 1600)
 					{
-						std::cout << "[!] Something went wrong in handle rest of the packet" << std::endl;
+						cout << "[!] Something went wrong in handle rest of the packet" << endl;
 						break;
 					}
 				}
@@ -203,7 +220,7 @@ static void tcpReassemblyConnectionEndCallback(const pcpp::ConnectionData& conne
 
 			if (tls->recordType == pcpp::SSL_HANDSHAKE)
 			{
-				TlsMessages.push_back(MyTLSMessage(y, tls, tls_payload));
+				TLSMessageList.push_back(MyTLSMessage(y, tls, tls_payload));
 			}
 			pkt_length -= sizeof(pcpp::ssl_tls_record_layer) + l;
 			tls = (pcpp::ssl_tls_record_layer*)(tls_payload + l);
@@ -211,7 +228,7 @@ static void tcpReassemblyConnectionEndCallback(const pcpp::ConnectionData& conne
 			prev_len += l + sizeof(pcpp::ssl_tls_record_layer);
 			if (pkt_length > 1600)
 			{
-				std::cout << "[!] Something went wrong in normal packet handle" << std::endl;
+				cout << "[!] Something went wrong in normal packet handle" << endl;
 				break;
 			}
 		}
@@ -220,26 +237,26 @@ static void tcpReassemblyConnectionEndCallback(const pcpp::ConnectionData& conne
 	// remove the connection from the connection manager
 	connMgr->erase(iter);
 
-	if (TlsMessages.size() == 0)
+	if (TLSMessageList.size() == 0)
 		return;
 
-	std::cout << "[+] Connection to '" << connectionData.dstIP.toString() << "' end. Process build TLS Messages of this connection ..." << std::endl;
-	std::cout << "[+] Building TLS Messages finished. Found " << TlsMessages.size() << " TLS Messages" << std::endl;
+	cout << "[+] Connection to '" << connectionData.dstIP.toString() << "' end. Process build TLS Messages of this connection ..." << endl;
+	cout << "[+] Building TLS Messages finished. Found " << TLSMessageList.size() << " TLS Messages" << endl;
 
-	std::vector<X509*> certChain;
-	std::cout << "[+] Extract Certificate Message out of the messages and map this to m_trustedCertificatesListCount" << std::endl;
+	vector<X509*> certChain;
+	cout << "[+] Extract Certificate Message" << endl;
 	
 	int countMatch = 0;
 	bool matchCertificate = false;
-	bool matchSubject = false;
+	bool matchIssuer = false;
 	bool certMessageExists = false;
-
+	vector<int> removeableMessages;
 	// Extract certificate chain of this connection
-	for (MyTLSMessage msg : TlsMessages)
+	for (MyTLSMessage msg : TLSMessageList)
 	{
 		if (msg.IsCertificateMessage())
 		{
-			std::cout << "[+] Found certificate Message" << std::endl;
+			cout << "[+] Found certificate Message" << endl;
 			certMessageExists = true;
 			countCertificateMessagePerConnection++;
 
@@ -250,68 +267,108 @@ static void tcpReassemblyConnectionEndCallback(const pcpp::ConnectionData& conne
 			// Get the last Cert of the chain, -> should be the root cert
 			X509* rootCert = certChain.back();
 			int index = 0;
-			std::cout << "[+] Search certificate with subject: " << X509_NAME_oneline(X509_get_subject_name(rootCert), NULL, 0) << std::endl;
-			for (std::pair<int, X509*> &pair : m_trustedCertificateListCount)
+			cout << "[+] Search certificate with Issuer: " << X509_NAME_oneline(X509_get_issuer_name(rootCert), NULL, 0) << endl;
+			for (pair<int, X509*> &pair : m_trustedCertificateListCount)
 			{
 				if(verbose)
-					std::cout << "  [*] Test certificate with subject: " << X509_NAME_oneline(X509_get_subject_name(pair.second), NULL, 0) << std::endl;
+					cout << "  [*] Test certificate with Issuer: " << X509_NAME_oneline(X509_get_issuer_name(pair.second), NULL, 0) << endl;
 
+				// Maybe this isn't required. 
 				if (X509_cmp(rootCert,pair.second) == 0) {
 					countMatch++;
 					matchCertificate = true;
-					m_trustedCertificateListCountValues.at(index)++;
-					std::cout << "============================ Matched Certificates ============================" << std::endl;
-					std::cout << X509_NAME_oneline(X509_get_subject_name(rootCert), NULL, 0) << std::endl;
-					std::cout << X509_NAME_oneline(X509_get_subject_name(pair.second), NULL, 0) << std::endl;
-					std::cout << "==============================================================================" << std::endl;
+					m_fig1Values.at(0).at(index)++;
+					cout << "============================ Matched Certificates ============================" << endl;
+					cout << X509_NAME_oneline(X509_get_issuer_name(rootCert), NULL, 0) << endl;
+					cout << X509_NAME_oneline(X509_get_issuer_name(pair.second), NULL, 0) << endl;
+					cout << "==============================================================================" << endl;
 				}
-				index++;
-				
-				/* Going to in reasearch why some certificates are regularly different but the subject fits */
-				if (verbose)
+
+				string searchIssuer = X509_NAME_oneline(X509_get_issuer_name(rootCert), NULL, 0);
+				string currentIssuer = X509_NAME_oneline(X509_get_issuer_name(pair.second), NULL, 0);
+
+				if (searchIssuer.compare(currentIssuer) == 0)
 				{
+					matchIssuer = true;
 
-					std::string searchSubj = X509_NAME_oneline(X509_get_subject_name(rootCert), NULL, 0);
-					std::string currentSub = X509_NAME_oneline(X509_get_subject_name(pair.second), NULL, 0);
-
-					if (searchSubj.compare(currentSub) == 0)
+					if (m_fig1Values.at(1).at(index) == 0)
 					{
-						matchSubject = true;
-						std::cout << "======================= Matched Subjects =======================" << std::endl;
-						std::cout << X509_NAME_oneline(X509_get_subject_name(rootCert), NULL, 0) << std::endl;
-						std::cout << X509_NAME_oneline(X509_get_subject_name(pair.second), NULL, 0) << std::endl;
-						std::cout << "====================================================================" << std::endl;
+						// Certificate Message found and not seen before
+						// Get timestamp of the connection start time and add this to a list
+						const time_t arrival = connectionData.startTime.tv_sec;
+						// m_fig2ValuesSec.push_back(arrival);
+						struct tm arr_tm;
+						localtime_s(&arr_tm, &arrival);
+						m_fig2Values.push_back(arr_tm);
 					}
+
+					m_fig1Values.at(1).at(index)++;
+					cout << "========================= Matched Issuer =========================" << endl;
+					cout << searchIssuer << endl;
+					cout << currentIssuer << endl;
+					cout << "==================================================================" << endl;
+					
+					break;
 				}
+				
+				index++;
 			}
 			
 			certChain.clear();
 		}
 	}
-	
-	std::cout << "[+] Extracting finished" << std::endl;
+		
+	cout << "[+] Extracting finished" << endl;
 	if (!certMessageExists)
 	{
-		std::cout << "[-] No Certificate Message found." << std::endl;
-		std::cout << "****************************************** End Connection Callback finished ******************************************" << std::endl;
+		cout << "[-] No Certificate Message found." << endl;
+		cout << "****************************************** End Connection Callback finished ******************************************" << endl;
 		return;
 	}
 
-	if (matchCertificate) 
+	if (matchCertificate && matchIssuer) 
 	{
+		countMatchCertIssuer++;
+		countMatchIssuer++;
 		countMatchCert++;
-		std::cout << "[+] Certificate found" << std::endl;
+		cout << "[+] Certificate found. Issuer and certificate fits" << endl;
 	}
-	else {
-		countCertNotExist++;
-		std::cout << "[!] The Certificate don't exist on the windows certificate store! This is bad" << std::endl;
-	}
-	if (matchSubject && verbose) 
+	else 
 	{
-		countMatchSubj++;
-		std::cout << "[+] Subject found but no certificate fits" << std::endl;
+		if (matchCertificate) 
+		{
+			countMatchCert++;
+			cout << "[+] Certificate found" << endl;
+		}
+		else if (matchIssuer)
+		{
+			countMatchIssuer++;
+			cout << "[+] Issuer match found but certificate don't fit" << endl;
+		}
+		else {
+			countCertNotExist++;
+			cout << "[!] The Certificate don't exist on the windows certificate store! This is bad" << endl;
+		}
 	}
-	std::cout << "****************************************** End Connection Callback finished ******************************************" << std::endl;
+
+	if (messagesEndcon % 100 == 0)
+	{
+		UpdateFigures();
+	}
+	cout << "****************************************** End Connection Callback finished ******************************************" << endl;
+}
+
+/**
+* Static method for comparing dates. Used by the figure2 plot function.
+*/
+static int cmp_dates_descend(const void* d1, const void* d2)
+{
+	struct tm date_1 = *(const struct tm*)d1;
+	struct tm date_2 = *(const struct tm*)d2;
+
+	double d = difftime(mktime(&date_1), mktime(&date_2));
+
+	return (d > 0) - (d < 0);
 }
 
 /**
@@ -319,10 +376,10 @@ static void tcpReassemblyConnectionEndCallback(const pcpp::ConnectionData& conne
  */
 void listInterfaces()
 {
-	const std::vector<pcpp::PcapLiveDevice*>& devList = pcpp::PcapLiveDeviceList::getInstance().getPcapLiveDevicesList();
+	const vector<pcpp::PcapLiveDevice*>& devList = pcpp::PcapLiveDeviceList::getInstance().getPcapLiveDevicesList();
 
 	printf("\nNetwork interfaces:\n");
-	for (std::vector<pcpp::PcapLiveDevice*>::const_iterator iter = devList.begin(); iter != devList.end(); iter++)
+	for (vector<pcpp::PcapLiveDevice*>::const_iterator iter = devList.begin(); iter != devList.end(); iter++)
 	{
 		printf("    -> Name: '%s'   IP address: %s\n", (*iter)->getName(), (*iter)->getIPv4Address().toString().c_str());
 	}
@@ -348,7 +405,6 @@ static void onPacketArrives(pcpp::RawPacket* packet, pcpp::PcapLiveDevice* dev, 
 	tcpReassembly->reassemblePacket(packet);
 }
 
-
 /*
 * called at beginning of the programm - read all Root CA certificates in the windows certificate store
 */
@@ -361,7 +417,8 @@ int readWindowsCAStore()
 	{
 		// char pszNameString[256];
 		printf("The system store was created successfully.\n");
-
+		vector<int> certTmp;
+		vector<int> issuerTmp;
 		while (pDesiredCert = CertFindCertificateInStore(hSysStore, MY_ENCODING_TYPE, 0, CERT_FIND_ANY, NULL, pDesiredCert))
 		{
 			count++;
@@ -374,11 +431,16 @@ int readWindowsCAStore()
 			else
 			{
 				// char* subj = X509_NAME_oneline(X509_get_subject_name(opensslCertificate), NULL, 0);
-				// std::cout << "Subject: " << subj << std::endl << "============================================" << std::endl;
-				m_trustedCertificateListCount.push_back(std::make_pair(0, opensslCertificate));
-				m_trustedCertificateListCountValues.push_back(0);
+				// cout << "Subject: " << subj << endl << "============================================" << endl;
+				m_trustedCertificateListCount.push_back(make_pair(0, opensslCertificate));
+				certTmp.push_back(0);
+				issuerTmp.push_back(0);
+				//m_figValuesCertMatch.push_back(0);
+				//m_figValuesIssuerMatch.push_back(0);
 			}
 		}
+		m_fig1Values.push_back(certTmp);
+		m_fig1Values.push_back(issuerTmp);
 
 		printf("Read %d Root CA's\n", count);
 		if (CertCloseStore( hSysStore, CERT_CLOSE_STORE_CHECK_FLAG))
@@ -397,92 +459,185 @@ int readWindowsCAStore()
 	return count;
 }
 
-
-std::thread th_Figure1;
-
-// A dummy function
-void foo(figure_handle fh)
+/**
+* Figure1 beschreibt die Häufigkeit der verwendeten zertifikate auf basis von übereinstimmender Zertifikaten und falls es kein Wurzelzertifikat ist
+* wird über den Issuer der Root Zertifikates der CN des konkreten Wurzelzertifikates extrahiert
+* 
+* Diese statistik wird immer wieder aktualisiert und somit am Anfang des programms konfiguriert
+*/
+void ConfigFigure1()
 {
-	/*figure_handle f = figure(false);
-	f->title("Next Analysis relevant statical overview");
-	auto ax = f->add_axes();
-	f->size(800, 400);
-	
-	bar(ax, x);
-	
-	f->draw();*/
-	std::vector<int> x = {5,4,8,1,6,15,7,8,9,10,11,12,13,14,15,16,17};
-	auto ax = fh->add_subplot(4,3,2);
-	ax->bar(x);
-	
-	//fh->touch();
-}
+	fh1->title("Verwendete Zertifikate");
+	fh1->size(1200, 700);
 
-// A dummy function
-void boo(figure_handle fh)
-{
-	/*figure_handle f = figure(false);
-	f->title("Next Analysis relevant statical overview");
-	auto ax = f->add_axes();
-	f->size(800, 400);
-
-	bar(ax, x);
-
-	f->draw();*/
-	std::vector<int> x = { 5,4,8,1,6};
-	auto ax = fh->add_subplot(4, 3, 9);
-	ax->bar(x);
-
-	//fh->touch();
-}
-
-// Maybe doing plotting in another thread for update on live captureing with a callback
-void ConfigTHFigure1()
-{
-	auto fh = figure();
-	fh->ion();
-	fh->size(1200, 860);
-
-	std::vector<std::string> x_labels;
-	//x_labels.push_back("");
-	std::vector<int> value;
+	vector<string> x_labels;
+	vector<int> value;
 	for (auto p : m_trustedCertificateListCount)
 	{
-		std::string sub = X509_NAME_oneline(X509_get_subject_name(p.second), NULL, 0);
-		std::vector<std::string> part_sub;
+		string sub = X509_NAME_oneline(X509_get_subject_name(p.second), NULL, 0);
+		vector<string> part_sub;
 		boost::split(part_sub, sub, [](char c) { return c == '/'; });
 		x_labels.push_back(part_sub.back().substr(3));
-		// m_trustedCertificateListCountValues.push_back(p.first);
 	}
 
-	std::vector<double> ticks;
+	vector<double> ticks;
 	for (int i = 1; i < m_trustedCertificateListCount.size()+1; i++) {
 		ticks.push_back(i);
-		//std::cout << "Subject -> " << x_labels[i] << std::endl;
 	}
 	
-	auto ax = fh->add_axes();
-	ax->bar(m_trustedCertificateListCountValues);
+	auto ax = fh1->add_subplot(3, 1, 0);
+
+	ax->bar(m_fig1Values);
+
 	ax->xticks(ticks);
 	ax->xticklabels(x_labels);
 	ax->xtickangle(90);
 	ax->ylabel("Frequency");
-	fh->touch();
+
+	vector<string> lgd_titels = { "Something A", "Something B" };
+	ax->legend(lgd_titels);
+
+	ax->draw();
+
+}
+
+/**
+* Figure2 wird erst am ende geplottet, da die achsenabstände über die zeit sich verändern und das zur folge hat dass die axen neu konfiguriert werden müssen
+* 
+* Figure2 beschreibt die zeitbasierte Häufigkeit. Wann stagniert es das neue Wurzelzertifikate benutzt werden.
+* Es wird prozentual der anteil verwendeter CA's berechnet und im zusammenhang mit einer zeitachse angezeigt.
+*/
+void PlotFigure2()
+{
+	cout << " *************************** Creating Plot time based frequency  *************************** " << endl;
+	// Sorting the timestamps
+	qsort(&m_fig2Values[0], m_fig2Values.size(), sizeof tm, cmp_dates_descend);
+
+	/*for (auto t : m_fig2Values)
+	{
+		char buff[100];
+		strftime(buff, 100, "%Y-%m-%d %H:%M:%S.000", &t);
+		cout << buff << endl;
+	}
+	cout << endl;*/
+
+	m_fig2CertCount.push_back(0);
+	
+	tm t_begin = m_fig2Values.front();
+	tm t_end = m_fig2Values.back();
+
+	// calculate the timespan of first and last for the ticks in the plot
+	cout << "[*] Calculate Timespan of the first and last seen certificate messsage" << endl;
+	time_t t_span = difftime(mktime(&t_end), mktime(&t_begin));
+
+	if (verbose) {
+		char front[100];
+		char back[100];
+		strftime(front, 100, "%Y-%m-%d %H:%M:%S.000", &t_begin);
+		strftime(back, 100, "%Y-%m-%d %H:%M:%S.000", &t_end);
+		cout << "[*] Time first seen: " << front << endl;
+		cout << "[*] Time last seen: " << back << endl;
+		cout << "[*] Time difference in seconds: " << t_span << endl;
+	}
+	
+	// split into 10 pieces
+	time_t span_sec = t_span / 100;
+
+	time_t start_time_span = mktime(&m_fig2Values[0]);
+	time_t end_time_span = start_time_span + span_sec;
+	int add_counter = 0;
+	vector<string> lbl_ticks;
+	lbl_ticks.push_back("");
+	bool finish = false;
+	for (int i = 0; i < m_fig2Values.size(); i++)
+	{
+		tm start_time;
+		tm cmp_end_time_span;
+		localtime_s(&start_time, &start_time_span);
+		localtime_s(&cmp_end_time_span, &end_time_span);
+		
+		char buff_start[100];
+		char buff_end[100];
+		strftime(buff_start, 100, "%Y-%m-%d %H:%M:%S.000", &start_time);
+		strftime(buff_end, 100, "%Y-%m-%d %H:%M:%S.000", &cmp_end_time_span);
+		lbl_ticks.push_back(buff_start);
+
+		if (finish)
+		{
+			// lbl_ticks.push_back(buff_end);
+			break;
+		}
+		if (verbose) {
+			cout << "[*] Count stamps from " << buff_start << " till: " << buff_end << endl;
+		}
+
+		for (int j = i; j < m_fig2Values.size(); j++)
+		{
+			if (cmp_dates_descend(&cmp_end_time_span, &m_fig2Values[j]) > 0)
+			{
+				if (verbose) {
+					char buff[100];
+					strftime(buff, 100, "%Y-%m-%d %H:%M:%S.000", &m_fig2Values[j]);
+					cout << "[*] In time: " << buff << endl;
+				}
+				add_counter++;
+				if (j == m_fig2Values.size() - 1)
+				{
+					m_fig2CertCount.push_back(add_counter);
+					finish = true;
+				}
+			}
+			else
+			{
+				m_fig2CertCount.push_back(add_counter);
+				i = j;
+				i--;
+				// add_counter = 0;
+				break;
+			}
+		}
+	
+		start_time_span = end_time_span;
+		end_time_span += span_sec;
+	}
+
+	fh2->title("Zeitbasierte stagnation der Root CA's");
+	fh2->size(1000, 600);
+
+	vector<double> ticks;
+	for (int u = 0; u < lbl_ticks.size(); u++)
+		ticks.push_back(u);
+
+	auto ax = fh2->add_subplot(2, 1, 0);
+	ax->plot(m_fig2CertCount);
+	
+	ax->xticks(ticks);
+	ax->xticklabels(lbl_ticks);
+	ax->xtickangle(90);
+	
+	ax->ylim({ 0, (double)add_counter + 1 });
+	ax->ylabel("Kumulative Root CA Count");
+
+	// which plot does fit best???
+
+	cout << " *************************** Creating Plot time based frequency finsihed  *************************** " << endl;
+	ax->draw();
+	
 
 }
 
 void printOverview()
 {
-	std::cout << "======================================= Overview =======================================" << std::endl;
-	std::cout << "[+] Messages Ready : " << messagesReady << std::endl;
-	std::cout << "[+] Messages Start Conn seen: " << messagesStartCon << std::endl;
-	std::cout << "[+] Messages End Conn seen: " << messagesEndcon << ", of these are " << countCertificateMessagePerConnection << " Certificates found" << std::endl;
-	std::cout << "[+] Count certificate match: " << countMatchCert << std::endl;
-	std::cout << "[+] Count certificate not found in windows certificate store: " << countCertNotExist << std::endl;
+	cout << "======================================= Overview =======================================" << endl;
+	cout << "[+] Messages Ready : " << messagesReady << endl;
+	cout << "[+] Messages Start Conn seen: " << messagesStartCon << endl;
+	cout << "[+] Messages End Conn seen: " << messagesEndcon << ", of these are " << countCertificateMessagePerConnection << " Certificates found" << endl;
+	cout << "[+] Count certificate match: " << countMatchCert << endl;
+	cout << "	means that these Domains are signed by a conrete RootCA certificate" << endl;
+	cout << "[+] Count certificate not found in windows certificate store: " << countCertNotExist << endl;
 	if(verbose) 
-		std::cout << "[+] Only the Subject matched nor the Certificate: " << countMatchSubj << std::endl;
-
-	std::cout << "========================================================================================" << std::endl;
+		cout << "[+] Only the Issuer matched: " << countMatchIssuer << endl;
+	cout << "========================================================================================" << endl;
 }
 
 /**
@@ -494,8 +649,8 @@ void doOnLiveTraffic(pcpp::PcapLiveDevice* dev, pcpp::TcpReassembly& tcpReassemb
 	if (!dev->open())
 		printf("Cannot open interface");
 
-	std::cout << "[+] Start Process to create figures..." << std::endl;
-	th_Figure1 = std::thread(ConfigTHFigure1);
+	// Initialise all Figures
+	ConfigFigure1();
 
 	printf("Starting packet capture on '%s'...\n", dev->getIPv4Address().toString().c_str());
 
@@ -516,15 +671,19 @@ void doOnLiveTraffic(pcpp::PcapLiveDevice* dev, pcpp::TcpReassembly& tcpReassemb
 
 	// close all connections which are still opened
 	tcpReassembly.closeAllConnections();
-
 	printf("Done! processed %d connections\n", (int)tcpReassembly.getConnectionInformation().size());
+
+	// update the figure last time
+	UpdateFigures();
+	PlotFigure2();
+
 	printOverview();
 }
 
 /**
  * The method responsible for TCP reassembly on pcap/pcapng files
  */
-void doTcpReassemblyOnPcapFile(std::string fileName, pcpp::TcpReassembly& tcpReassembly)
+void doTcpReassemblyOnPcapFile(string fileName, pcpp::TcpReassembly& tcpReassembly)
 {
 	pcpp::IFileReaderDevice* reader = pcpp::IFileReaderDevice::getReader(fileName.c_str());
 	if (!reader->open())
@@ -533,38 +692,41 @@ void doTcpReassemblyOnPcapFile(std::string fileName, pcpp::TcpReassembly& tcpRea
 		return;
 	}
 
-	std::cout << "[+] Start Process to create figures..." << std::endl;
-	th_Figure1 = std::thread(ConfigTHFigure1);
+	// Initialise all Figures
+	ConfigFigure1();
+	// ConfigTHFigure2();
 
-	std::cout << "[+] Start reassembling packets..." << std::endl;
+	cout << "[+] Start reassembling packets..." << endl;
 	pcpp::RawPacket rawPacket;
 	while (reader->getNextPacket(rawPacket))
 	{
 		tcpReassembly.reassemblePacket(&rawPacket);
 	}
-	std::cout << "[+] Closing Connections that are not ended manually" << std::endl;
+	cout << "[+] Closing Connections that are not ended manually" << endl;
 	tcpReassembly.closeAllConnections();
-	std::cout << "[+] Reassembling finished" << std::endl;
+	cout << "[+] Reassembling finished" << endl;
 
 	reader->close();
 	delete reader;
 
+	UpdateFigures();
+	PlotFigure2();
+	
 	printOverview();
-	// ConfigTHFigure1();
-
 }
 
 int main(int argc, char* argv[])
 {
-	std::string interfaceNameOrIP;
-	std::string filename;
+	string interfaceNameOrIP;
+	string filename;
+	bool file = false;
 
 	po::options_description desc("Allowed options");
 	desc.add_options()
 		("help", "view the help message")
 		("verbose", "Enable verbose mode")
-		("interface", po::value<std::string>(&interfaceNameOrIP), "IP for live capturing")
-		("file", po::value<std::string>(&filename), "Filename of the pcap for analysing");
+		("interface", po::value<string>(&interfaceNameOrIP), "IP for live capturing")
+		("file", po::value<string>(&filename), "Filename of the pcap for analysing");
 
 	po::variables_map vm;
 	po::store(po::parse_command_line(argc, argv, desc), vm);
@@ -576,11 +738,11 @@ int main(int argc, char* argv[])
 	
 	if (vm.count("help"))
 	{
-		std::cout << desc << std::endl;
+		cout << desc << endl;
 		return 1;
 	}
 	if (vm.size() == 0) {
-		std::cout << desc << std::endl;
+		cout << desc << endl;
 		return 1;
 	}
 	if (vm.count("verbose"))
@@ -593,24 +755,24 @@ int main(int argc, char* argv[])
 		int countCertInStore = readWindowsCAStore();
 		if (countCertInStore <= 0)
 		{
-			std::cout << "The give windows certificate store can't load certificates. " << std::endl;
+			cout << "The give windows certificate store can't load certificates. " << endl;
 			return 1;
 		}
 
-		std::cout << "Start captureing on interface: " << vm["interface"].as<std::string>() << std::endl;
+		cout << "Start captureing on interface: " << vm["interface"].as<string>() << endl;
 		pcpp::PcapLiveDevice* dev = NULL;
 		pcpp::IPv4Address interfaceIP(interfaceNameOrIP);
 		if (interfaceIP.isValid())
 		{
 			dev = pcpp::PcapLiveDeviceList::getInstance().getPcapLiveDeviceByIp(interfaceIP);
 			if (dev == NULL)
-				std::cout << "Couldn't find interface by provided IP" << std::endl;
+				cout << "Couldn't find interface by provided IP" << endl;
 		}
 		else
 		{
 			dev = pcpp::PcapLiveDeviceList::getInstance().getPcapLiveDeviceByName(interfaceNameOrIP);
 			if (dev == NULL)
-				std::cout << "Couldn't find interface by provided name" << std::endl;
+				cout << "Couldn't find interface by provided name" << endl;
 		}
 
 		// start capturing packets and do TCP reassembly
@@ -619,23 +781,21 @@ int main(int argc, char* argv[])
 	}
 	else if (vm.count("file"))
 	{
+		file = true;
 		int countCertInStore = readWindowsCAStore();
 		if (countCertInStore <= 0)
 		{
-			std::cout << "The give windows certificate store can't load certificates. " << std::endl;
+			cout << "The give windows certificate store can't load certificates. " << endl;
 			return 1;
 		}
 
-		std::cout << "Start analysing file: " << vm["file"].as<std::string>() << std::endl;
+		cout << "Start analysing file: " << vm["file"].as<string>() << endl;
 		doTcpReassemblyOnPcapFile(filename, tcpReassembly);
 
 	}
 	
-	std::cout << "Programm end!" << std::endl;
-	std::cout << "Wait for figures ending..." << std::endl;
-	th_Figure1.join();
-	std::cout << "Press enter to return and quit the figures... " << std::endl;
-	getchar();
+	cout << "Programm end!" << endl;
+	show();
 
 	return 0;
 }
